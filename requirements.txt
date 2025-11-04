@@ -1,0 +1,8 @@
+streamlit
+GPUtil
+opencv-python
+sounddevice
+pyperclip
+joblib
+cohere
+scikit-learn
