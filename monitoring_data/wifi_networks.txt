@@ -1,0 +1,36 @@
+
+Profiles on interface Wi-Fi:
+
+Group policy profiles (read only)
+---------------------------------
+    <None>
+
+User profiles
+-------------
+    All User Profile     : NO WIFI FOR YOU
+    All User Profile     : Galaxy F54 5G E9AB 2
+    All User Profile     : Lohith's S23 Ultra
+    All User Profile     : Achintya's Doorbashya Yantra
+    All User Profile     : VITC-HOS2-4
+    All User Profile     : Galaxy A14 5G B533
+    All User Profile     : Divya's 
+    All User Profile     : Airtel_9874393543
+    All User Profile     : Airtel_9874393543_5GHz
+    All User Profile     : Galaxy F54 5G E9AB
+    All User Profile     : Spyder
+    All User Profile     : Connection Impossible 
+    All User Profile     : If You Connect Then You Gay ðŸ«µ
+    All User Profile     : Gauravâ€™s iPhone
+    All User Profile     : Jade Suites Guest
+    All User Profile     : Vaibhav's S23
+    All User Profile     : LENOVO KOLKATA 5G
+    All User Profile     : Airtel_RED ROSE1_5G
+    All User Profile     : iQOO Neo7 Pro
+    All User Profile     : OnePlus 12
+    All User Profile     : Batman
+    All User Profile     : Vicky
+    All User Profile     : ROG Phone 5_6500
+    All User Profile     : VITC-PGM
+    All User Profile     : OPPO A15s
+    All User Profile     : vivo 1909
+

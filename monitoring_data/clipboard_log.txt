@@ -1,0 +1,498 @@
+2025-11-04T02:31:45.162506 - import os
+import time
+import threading
+import json
+from datetime import datetime
+from pathlib import Path
+
+import psutil
+import GPUtil
+import cv2
+import sounddevice as sd
+import numpy as np
+import wave
+import pyperclip
+import subprocess
+import pandas as pd
+import joblib
+import cohere
+
+class SystemHardwareCollector:
+    @staticmethod
+    def get_metrics():
+        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_per_core = psutil.cpu_percent(interval=None, percpu=True)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        net = psutil.net_io_counters()
+        
+        metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "cpu_usage": cpu_percent,
+            "cpu_per_core": list(cpu_per_core),
+            "memory_percent": mem.percent,
+            "memory_used_gb": round(mem.used / (1024 ** 3), 2),
+            "disk_percent": disk.percent,
+            "bytes_sent_mb": round(net.bytes_sent / (1024 ** 2), 2),
+            "bytes_recv_mb": round(net.bytes_recv / (1024 ** 2), 2)
+        }
+        
+        try:
+            gpus = GPUtil.getGPUs()
+            if gpus:
+                gpu = gpus[0]
+                metrics["gpu_load"] = round(gpu.load * 100, 1)
+                metrics["gpu_temp"] = gpu.temperature
+                metrics["gpu_memory_used_gb"] = round(gpu.memoryUsed / 1024, 2)
+        except:
+            metrics["gpu_load"] = 0
+            metrics["gpu_temp"] = 0
+            
+        return metrics
+
+class SystemDataCollector:
+    def __init__(self, output_dir="collected_data"):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True)
+        self.running = False
+        
+    def capture_images(self, count=3, interval=20):
+        cap = cv2.VideoCapture(0)
+        for i in range(count):
+            if not self.running:
+                break
+            ret, frame = cap.read()
+            if ret:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filepath = self.output_dir / f"webcam_{timestamp}.jpg"
+                cv2.imwrite(str(filepath), frame)
+            time.sleep(interval)
+        cap.release()
+    
+    def record_audio(self, duration=10):
+        sample_rate = 44100
+        audio_data = sd.rec(int(duration * sample_rate), samplerate=sample_rate, 
+                           channels=2, dtype=np.int16)
+        sd.wait()
+        
+        filepath = self.output_dir / f"audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+        with wave.open(str(filepath), "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_data.tobytes())
+    
+    def log_clipboard(self, iterations=10, interval=2):
+        last_clip = ""
+        filepath = self.output_dir / "clipboard_log.txt"
+        
+        for _ in range(iterations):
+            if not self.running:
+                break
+            current_clip = pyperclip.paste()
+            if current_clip != last_clip:
+                with open(filepath, "a") as f:
+                    f.write(f"{datetime.now().isoformat()} - {current_clip}\n")
+                last_clip = current_clip
+            time.sleep(interval)
+    
+    def scan_wifi(self):
+        result = subprocess.run(["netsh", "wlan", "show", "profile"], 
+                              capture_output=True, text=True)
+        filepath = self.output_dir / "wifi_networks.txt"
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(result.stdout)
+    
+    def monitor_processes(self, iterations=10, interval=2):
+        filepath = self.output_dir / "processes.txt"
+        for _ in range(iterations):
+            if not self.running:
+                break
+            with open(filepath, "w") as f:
+                for proc in psutil.process_iter(["pid", "name"]):
+                    f.write(f"{proc.info['pid']} - {proc.info['name']}\n")
+            time.sleep(interval)
+    
+    def collect_all(self):
+        self.running = True
+        threads = [
+            threading.Thread(target=self.capture_images),
+            threading.Thread(target=self.record_audio),
+            threading.Thread(target=self.log_clipboard),
+            threading.Thread(target=self.scan_wifi),
+            threading.Thread(target=self.monitor_processes)
+        ]
+        
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        
+        self.running = False
+
+class IntrusionDetectionModel:
+    def __init__(self, model_path=None):
+        self.model = None
+        self.feature_names = [
+            "duration","protocol_type","service","flag","src_bytes","dst_bytes","land",
+            "wrong_fragment","urgent","hot","num_failed_logins","logged_in","num_compromised",
+            "root_shell","su_attempted","num_root","num_file_creations","num_shells",
+            "num_access_files","num_outbound_cmds","is_host_login","is_guest_login","count",
+            "srv_count","serror_rate","srv_serror_rate","rerror_rate","srv_rerror_rate",
+            "same_srv_rate","diff_srv_rate","srv_diff_host_rate","dst_host_count",
+            "dst_host_srv_count","dst_host_same_srv_rate","dst_host_diff_srv_rate",
+            "dst_host_same_src_port_rate","dst_host_srv_diff_host_rate","dst_host_serror_rate",
+            "dst_host_srv_serror_rate","dst_host_rerror_rate","dst_host_srv_rerror_rate"
+        ]
+        
+        if model_path and os.path.exists(model_path):
+            self.model = joblib.load(model_path)
+    
+    def train(self, data_path, save_path="ids_model.pkl"):
+        from sklearn.model_selection import train_test_split
+        from sklearn.preprocessing import StandardScaler, OneHotEncoder
+        from sklearn.compose import ColumnTransformer
+        from sklearn.pipeline import Pipeline
+        from sklearn.ensemble import RandomForestClassifier
+        
+        cols = self.feature_names + ["label", "difficulty"]
+        df = pd.read_csv(data_path, names=cols, header=None)
+        df = df.drop(columns=["difficulty"])
+        df["is_attack"] = (df["label"].str.lower() != "normal").astype(int)
+        
+        categorical_cols = ["protocol_type", "service", "flag"]
+        numeric_cols = [c for c in self.feature_names if c not in categorical_cols]
+        df[numeric_cols] = df[numeric_cols].fillna(0).astype(float)
+        
+        X = df[self.feature_names]
+        y = df["is_attack"].values
+        
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.25, stratify=y, random_state=42
+        )
+        
+        preprocessor = ColumnTransformer(transformers=[
+            ("num", StandardScaler(), numeric_cols),
+            ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), categorical_cols)
+        ])
+        
+        self.model = Pipeline([
+            ("preprocessor", preprocessor),
+            ("classifier", RandomForestClassifier(n_estimators=100, max_depth=20, random_state=42))
+        ])
+        
+        self.model.fit(X_train, y_train)
+        joblib.dump(self.model, save_path)
+        
+        accuracy = self.model.score(X_test, y_test)
+        return accuracy
+    
+    def predict(self, network_data):
+        if self.model is None:
+            return {"prediction": "no_model", "confidence": 0.0}
+        df = pd.DataFrame([network_data])
+        prediction = self.model.predict(df)
+        proba = self.model.predict_proba(df)
+        return {
+            "prediction": "attack" if prediction[0] == 1 else "normal",
+            "confidence": float(max(proba[0]))
+        }
+
+class CohereSystemAnalyzer:
+    def __init__(self, api_key):
+        self.client = cohere.Client(api_key)
+        
+    def analyze_system_health(self, metrics_data, process_data, wifi_data, ml_prediction=None):
+        metrics_summary = self._summarize_metrics(metrics_data)
+        
+        prompt = f"""Analyze this system data and identify any issues or anomalies:
+
+{metrics_summary}
+
+List any concerns found (high CPU, memory issues, disk problems, etc.). If everything looks normal, say "No issues detected"."""
+
+        try:
+            response = self.client.chat(
+                message=prompt,
+                model="command-a-03-2025",
+                temperature=0.1,
+                max_tokens=500
+            )
+            
+            concerns_text = response.text.strip()
+            
+            rule_score = self.calculate_rule_based_score(metrics_data, ml_prediction)
+            
+            has_issues = "no issues" not in concerns_text.lower() and "normal" not in concerns_text.lower()
+            
+            if has_issues:
+                llm_adjustment = -0.1
+            else:
+                llm_adjustment = 0.05
+            
+            final_score = max(0.0, min(1.0, rule_score + llm_adjustment))
+            
+            return {
+                "health_score": final_score,
+                "status": "Good" if final_score >= 0.7 else "Bad",
+                "reasoning": concerns_text,
+                "concerns": [concerns_text] if has_issues else []
+            }
+            
+        except Exception as e:
+            print(f"[WARNING] Cohere API failed: {str(e)}")
+            rule_score = self.calculate_rule_based_score(metrics_data, ml_prediction)
+            return {
+                "health_score": rule_score,
+                "status": "Good" if rule_score >= 0.7 else "Bad",
+                "reasoning": "Rule-based analysis (LLM unavailable)",
+                "concerns": []
+            }
+    
+    def _summarize_metrics(self, metrics_data):
+        if not metrics_data:
+            return "No metrics available"
+        
+        latest = metrics_data[-1]
+        avg_cpu = np.mean([m.get("cpu_usage", 0) for m in metrics_data])
+        avg_mem = np.mean([m.get("memory_percent", 0) for m in metrics_data])
+        max_cpu = max([m.get("cpu_usage", 0) for m in metrics_data])
+        max_mem = max([m.get("memory_percent", 0) for m in metrics_data])
+        
+        return f"""
+        Latest CPU: {latest.get('cpu_usage', 0)}%
+        Latest Memory: {latest.get('memory_percent', 0)}%
+        Avg CPU: {avg_cpu:.2f}%
+        Avg Memory: {avg_mem:.2f}%
+        Max CPU: {max_cpu:.2f}%
+        Max Memory: {max_mem:.2f}%
+        Disk Usage: {latest.get('disk_percent', 0)}%
+        Network Sent: {latest.get('bytes_sent_mb', 0)} MB
+        Network Received: {latest.get('bytes_recv_mb', 0)} MB
+        GPU Load: {latest.get('gpu_load', 0)}%
+        GPU Temp: {latest.get('gpu_temp', 0)}°C
+        """
+    
+    def _summarize_processes(self, process_data):
+        if not process_data:
+            return "No process data available"
+        
+        lines = process_data.strip().split('\n')
+        process_count = len(lines)
+        
+        return f"Total processes: {process_count}"
+    
+    def _summarize_wifi(self, wifi_data):
+        if not wifi_data:
+            return "No WiFi data available"
+        
+        lines = wifi_data.strip().split('\n')
+        profile_count = sum(1 for line in lines if "All User Profile" in line)
+        
+        return f"WiFi profiles: {profile_count}"
+    
+    def _parse_llm_response(self, response_text):
+        return response_text
+    
+    def calculate_rule_based_score(self, metrics_data, ml_prediction=None):
+        if not metrics_data:
+            return 0.5
+        
+        latest = metrics_data[-1]
+        score = 1.0
+        
+        cpu_usage = latest.get("cpu_usage", 0)
+        if cpu_usage > 90:
+            score -= 0.3
+        elif cpu_usage > 70:
+            score -= 0.15
+        
+        mem_usage = latest.get("memory_percent", 0)
+        if mem_usage > 90:
+            score -= 0.3
+        elif mem_usage > 80:
+            score -= 0.15
+        
+        disk_usage = latest.get("disk_percent", 0)
+        if disk_usage > 95:
+            score -= 0.2
+        elif disk_usage > 85:
+            score -= 0.1
+        
+        gpu_temp = latest.get("gpu_temp", 0)
+        if gpu_temp > 85:
+            score -= 0.15
+        elif gpu_temp > 75:
+            score -= 0.08
+        
+        if ml_prediction and ml_prediction.get("prediction") == "attack":
+            score -= 0.4
+        
+        return max(0.0, min(1.0, score))
+
+class MonitoringPipeline:
+    def __init__(self, model_path=None, output_dir="monitoring_output", cohere_api_key=None):
+        self.hw_collector = SystemHardwareCollector()
+        self.data_collector = SystemDataCollector(output_dir)
+        self.ids_model = IntrusionDetectionModel(model_path)
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(exist_ok=True)
+        
+        self.cohere_analyzer = None
+        if cohere_api_key:
+            self.cohere_analyzer = CohereSystemAnalyzer(cohere_api_key)
+    
+    def run_monitoring_cycle(self, duration=60, analysis_interval=60):
+        start_time = time.time()
+        session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+        metrics_log = self.output_dir / f"metrics_{session_id}.json"
+        analysis_log = self.output_dir / f"analysis_{session_id}.json"
+        
+        metrics_list = []
+        analysis_results = []
+        last_analysis_time = start_time
+        
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting monitoring session: {session_id}")
+        
+        data_collection_thread = threading.Thread(target=self.data_collector.collect_all)
+        data_collection_thread.start()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Data collection started in background")
+        
+        while time.time() - start_time < duration:
+            metrics = self.hw_collector.get_metrics()
+            metrics_list.append(metrics)
+            
+            with open(metrics_log, "w") as f:
+                json.dump(metrics_list, f, indent=2)
+            
+            if time.time() - last_analysis_time >= analysis_interval:
+                analysis = self._perform_analysis(metrics_list, session_id)
+                analysis_results.append(analysis)
+                
+                with open(analysis_log, "w") as f:
+                    json.dump(analysis_results, f, indent=2)
+                
+                self._print_analysis(analysis)
+                last_analysis_time = time.time()
+            
+            time.sleep(5)
+        
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Waiting for data collection to complete...")
+        self.data_collector.running = False
+        data_collection_thread.join(timeout=10)
+        
+        final_analysis = self._perform_analysis(metrics_list, session_id)
+        analysis_results.append(final_analysis)
+        
+        with open(analysis_log, "w") as f:
+            json.dump(analysis_results, f, indent=2)
+        
+        self._print_analysis(final_analysis, final=True)
+        
+        return {
+            "session_id": session_id,
+            "metrics_collected": len(metrics_list),
+            "analyses_performed": len(analysis_results),
+            "final_health_score": final_analysis["health_score"],
+            "final_status": final_analysis["status"]
+        }
+    
+    def _perform_analysis(self, metrics_list, session_id):
+        metrics_file = self.output_dir / f"metrics_{session_id}.json"
+        processes_file = self.output_dir / "processes.txt"
+        wifi_file = self.output_dir / "wifi_networks.txt"
+        
+        process_data = ""
+        if processes_file.exists():
+            with open(processes_file, "r") as f:
+                process_data = f.read()
+        
+        wifi_data = ""
+        if wifi_file.exists():
+            with open(wifi_file, "r", encoding="utf-8") as f:
+                wifi_data = f.read()
+        
+        ml_prediction = None
+        
+        analysis = {
+            "timestamp": datetime.now().isoformat(),
+            "metrics_count": len(metrics_list),
+            "rule_based_score": 0.0,
+            "health_score": 0.0,
+            "status": "Unknown",
+            "reasoning": "",
+            "concerns": [],
+            "ml_prediction": ml_prediction
+        }
+        
+        if self.cohere_analyzer and len(metrics_list) > 0:
+            rule_score = self.cohere_analyzer.calculate_rule_based_score(metrics_list, ml_prediction)
+            analysis["rule_based_score"] = round(rule_score, 3)
+            
+            llm_result = self.cohere_analyzer.analyze_system_health(
+                metrics_list, process_data, wifi_data, ml_prediction
+            )
+            
+            analysis["health_score"] = round(llm_result.get("health_score", rule_score), 3)
+            analysis["status"] = llm_result.get("status", "Good" if rule_score > 0.7 else "Bad")
+            analysis["reasoning"] = llm_result.get("reasoning", "Analysis completed")
+            analysis["concerns"] = llm_result.get("concerns", [])
+        else:
+            rule_score = 0.7
+            if metrics_list:
+                latest = metrics_list[-1]
+                if latest.get("cpu_usage", 0) > 80 or latest.get("memory_percent", 0) > 85:
+                    rule_score = 0.5
+            
+            analysis["rule_based_score"] = round(rule_score, 3)
+            analysis["health_score"] = round(rule_score, 3)
+            analysis["status"] = "Good" if rule_score > 0.7 else "Bad"
+            analysis["reasoning"] = "Rule-based analysis only"
+        
+        return analysis
+    
+    def _print_analysis(self, analysis, final=False):
+        prefix = "FINAL" if final else "ANALYSIS"
+        print(f"\n{'='*60}")
+        print(f"[{prefix}] System Health Assessment")
+        print(f"{'='*60}")
+        print(f"Timestamp: {analysis['timestamp']}")
+        print(f"Health Score: {analysis['health_score']:.3f}")
+        print(f"Status: {analysis['status']}")
+        print(f"Rule-based Score: {analysis['rule_based_score']:.3f}")
+        print(f"\nReasoning: {analysis['reasoning']}")
+        if analysis['concerns']:
+            print(f"\nConcerns:")
+            for concern in analysis['concerns']:
+                print(f"  - {concern}")
+        print(f"{'='*60}\n")
+    
+    def train_ids(self, data_path, save_path="ids_model.pkl"):
+        accuracy = self.ids_model.train(data_path, save_path)
+        return accuracy
+
+if __name__ == "__main__":
+    COHERE_API_KEY = "ho1WVCICWxT3rdG39bPK5XYXdhHoe6fCyX0rG4nn"
+    
+    pipeline = MonitoringPipeline(
+        output_dir="monitoring_data",
+        cohere_api_key=COHERE_API_KEY
+    )
+    
+    print("="*60)
+    print("System Monitoring & Health Analysis Pipeline")
+    print("="*60)
+    
+    result = pipeline.run_monitoring_cycle(duration=180, analysis_interval=60)
+    
+    print("\n" + "="*60)
+    print("Session Summary:")
+    print("="*60)
+    for key, value in result.items():
+        print(f"{key}: {value}")
+    print("="*60)
+2025-11-05T00:09:17.394263 - C:\Users\Sebabrat\Desktop\software_project_team-main>python3 software_project_team-main
+Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+
+C:\Users\Sebabrat\Desktop\software_project_team-main>python software_project_team-main 
+python: can't open file 'C:\\Users\\Sebabrat\\Desktop\\software_project_team-main\\software_project_team-main': [Errno 2] No such file or directory
